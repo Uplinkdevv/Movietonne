@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,10 +13,11 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { TmdbService } from '../services/tmdb';
+import { ALL_FALLBACK_ITEMS } from '../services/fallbackData';
 import { MediaItem, MediaType } from '../types';
 import { MediaCard } from '../components/MediaCard';
 import { COLORS, SPACING, RADIUS } from '../constants/theme';
-import { Search as SearchIcon, X, SlidersHorizontal, Sparkles } from 'lucide-react-native';
+import { Search as SearchIcon, X, Sparkles, RotateCcw } from 'lucide-react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_WIDTH = (SCREEN_WIDTH - SPACING.md * 3) / 2;
@@ -31,51 +32,113 @@ const GENRE_FILTERS = [
   'Horror',
   'Thriller',
   'Fantasy',
+  'Adventure',
 ];
 
 export const SearchScreen: React.FC = () => {
   const navigation = useNavigation<NativeStackNavigationProp<any>>();
 
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<MediaItem[]>([]);
+  const [results, setResults] = useState<MediaItem[]>(() => ALL_FALLBACK_ITEMS.slice(0, 20));
   const [loading, setLoading] = useState(false);
   const [selectedType, setSelectedType] = useState<'all' | MediaType>('all');
   const [selectedGenre, setSelectedGenre] = useState('All');
 
+  const searchCounterRef = useRef(0);
+
   useEffect(() => {
-    if (!query.trim()) {
-      setResults([]);
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setResults(ALL_FALLBACK_ITEMS.slice(0, 20));
+      setLoading(false);
       return;
     }
 
+    const currentSearchId = ++searchCounterRef.current;
+    setLoading(true);
+
     const timer = setTimeout(async () => {
-      setLoading(true);
       try {
-        const searchResults = await TmdbService.search(query);
-        setResults(searchResults);
+        const searchResults = await TmdbService.search(trimmed);
+        if (searchCounterRef.current === currentSearchId) {
+          setResults(searchResults);
+        }
       } catch (e) {
         console.warn('[SearchScreen] Search error:', e);
+        if (searchCounterRef.current === currentSearchId) {
+          setResults(TmdbService.searchOfflineCatalog(trimmed));
+        }
       } finally {
-        setLoading(false);
+        if (searchCounterRef.current === currentSearchId) {
+          setLoading(false);
+        }
       }
-    }, 400);
+    }, 300);
 
     return () => clearTimeout(timer);
   }, [query]);
 
+  // Robust, flexible genre matching
+  const isGenreMatch = (itemGenres: string[] | undefined, filter: string): boolean => {
+    if (filter === 'All') return true;
+    if (!Array.isArray(itemGenres) || itemGenres.length === 0) return false;
+
+    const f = filter.toLowerCase().trim();
+    return itemGenres.some((g) => {
+      if (!g || typeof g !== 'string') return false;
+      const gl = g.toLowerCase().trim();
+      if (gl === f) return true;
+      if (f === 'sci-fi' && (gl === 'science fiction' || gl.includes('sci-fi') || gl.includes('science fiction'))) return true;
+      if (f === 'action' && gl.includes('action')) return true;
+      if (f === 'adventure' && gl.includes('adventure')) return true;
+      if (f === 'fantasy' && (gl.includes('fantasy') || gl === 'sci-fi & fantasy')) return true;
+      if (f === 'animation' && (gl === 'animation' || gl === 'anime')) return true;
+      return false;
+    });
+  };
+
+  // Accurate format matching
+  const isTypeMatch = (item: MediaItem, typeFilter: 'all' | MediaType): boolean => {
+    if (typeFilter === 'all') return true;
+
+    const isSeries = (Array.isArray(item.seasons) && item.seasons.length > 0) || item.mediaType === 'tv';
+
+    if (typeFilter === 'movie') {
+      // Matches standard movies, or anime movies (not episodic series)
+      if (item.mediaType === 'movie') return true;
+      if (item.mediaType === 'anime' && !isSeries) return true;
+      return false;
+    }
+
+    if (typeFilter === 'tv') {
+      // Matches standard TV series, or anime series
+      if (item.mediaType === 'tv') return true;
+      if (item.mediaType === 'anime' && isSeries) return true;
+      return false;
+    }
+
+    if (typeFilter === 'anime') {
+      if (item.mediaType === 'anime') return true;
+      const isJapanese = item.originalTitle && /[一-龠ぁ-ゔァ-ヴー]/.test(item.originalTitle);
+      const isAnim = Array.isArray(item.genres) && item.genres.some((g) => g.toLowerCase() === 'animation');
+      return Boolean(isJapanese && isAnim);
+    }
+
+    return item.mediaType === typeFilter;
+  };
+
   // Apply filters
   const filteredResults = results.filter((item) => {
-    if (selectedType !== 'all' && item.mediaType !== selectedType) {
-      return false;
-    }
-    if (
-      selectedGenre !== 'All' &&
-      !item.genres.some((g) => g.toLowerCase() === selectedGenre.toLowerCase())
-    ) {
-      return false;
-    }
-    return true;
+    return isTypeMatch(item, selectedType) && isGenreMatch(item.genres, selectedGenre);
   });
+
+  const handleResetFilters = () => {
+    setSelectedType('all');
+    setSelectedGenre('All');
+    setQuery('');
+  };
+
+  const isBrowsingPopular = !query.trim();
 
   return (
     <SafeAreaView style={styles.container}>
@@ -85,7 +148,7 @@ export const SearchScreen: React.FC = () => {
           <SearchIcon size={18} color={COLORS.textSecondary} />
           <TextInput
             style={styles.input}
-            placeholder="Search movies, series, anime..."
+            placeholder="Search movies, series, anime, vault..."
             placeholderTextColor={COLORS.textMuted}
             value={query}
             onChangeText={setQuery}
@@ -93,7 +156,7 @@ export const SearchScreen: React.FC = () => {
             autoCorrect={false}
           />
           {query.length > 0 && (
-            <TouchableOpacity onPress={() => setQuery('')}>
+            <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <X size={18} color={COLORS.textSecondary} />
             </TouchableOpacity>
           )}
@@ -111,6 +174,7 @@ export const SearchScreen: React.FC = () => {
                 key={t}
                 style={[styles.typeChip, active && styles.typeChipActive]}
                 onPress={() => setSelectedType(t)}
+                activeOpacity={0.7}
               >
                 <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>
                   {t === 'all' ? 'All Formats' : t.toUpperCase()}
@@ -132,6 +196,7 @@ export const SearchScreen: React.FC = () => {
               <TouchableOpacity
                 style={[styles.genreChip, active && styles.genreChipActive]}
                 onPress={() => setSelectedGenre(item)}
+                activeOpacity={0.7}
               >
                 <Text style={[styles.genreChipText, active && styles.genreChipTextActive]}>
                   {item}
@@ -141,6 +206,14 @@ export const SearchScreen: React.FC = () => {
           }}
           contentContainerStyle={styles.genreList}
         />
+      </View>
+
+      {/* Status Bar / Header */}
+      <View style={styles.subHeader}>
+        <Text style={styles.subHeaderText}>
+          {isBrowsingPopular ? 'Discover & Trending Picks' : `Results for "${query.trim()}"`}
+        </Text>
+        <Text style={styles.countText}>{filteredResults.length} items</Text>
       </View>
 
       {/* Results Content */}
@@ -164,18 +237,17 @@ export const SearchScreen: React.FC = () => {
           )}
           contentContainerStyle={styles.resultsGrid}
         />
-      ) : query.trim().length > 0 ? (
-        <View style={styles.centerContainer}>
-          <Text style={styles.noResultsText}>No results found for "{query}"</Text>
-          <Text style={styles.statusText}>Try adjusting your search or filters</Text>
-        </View>
       ) : (
         <View style={styles.centerContainer}>
           <Sparkles size={36} color={COLORS.primary} style={{ marginBottom: 12 }} />
-          <Text style={styles.discoverHeading}>Discover Anything</Text>
-          <Text style={styles.discoverText}>
-            Search thousands of movies, television series, and anime with real-time metadata.
+          <Text style={styles.noResultsText}>No titles match your selection</Text>
+          <Text style={styles.statusText}>
+            Try adjusting your search query, format, or genre filters.
           </Text>
+          <TouchableOpacity style={styles.resetBtn} onPress={handleResetFilters} activeOpacity={0.8}>
+            <RotateCcw size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+            <Text style={styles.resetBtnText}>Reset Search & Filters</Text>
+          </TouchableOpacity>
         </View>
       )}
     </SafeAreaView>
@@ -190,7 +262,7 @@ const styles = StyleSheet.create({
   searchBarWrapper: {
     paddingHorizontal: SPACING.md,
     paddingTop: SPACING.md,
-    paddingBottom: SPACING.sm,
+    paddingBottom: SPACING.xs,
   },
   searchBar: {
     flexDirection: 'row',
@@ -209,13 +281,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   filtersWrapper: {
-    paddingBottom: SPACING.sm,
+    paddingBottom: SPACING.xs,
   },
   typeRow: {
     flexDirection: 'row',
     paddingHorizontal: SPACING.md,
     gap: SPACING.xs,
     marginBottom: SPACING.xs,
+    marginTop: SPACING.xs,
   },
   typeChip: {
     flex: 1,
@@ -241,7 +314,8 @@ const styles = StyleSheet.create({
   genreList: {
     paddingHorizontal: SPACING.md,
     gap: SPACING.xs,
-    paddingTop: 4,
+    paddingTop: 2,
+    paddingBottom: 4,
   },
   genreChip: {
     paddingHorizontal: 12,
@@ -264,9 +338,27 @@ const styles = StyleSheet.create({
     color: '#070A13',
     fontWeight: '700',
   },
+  subHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 6,
+  },
+  subHeaderText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  countText: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+  },
   resultsGrid: {
     paddingHorizontal: SPACING.md,
-    paddingTop: SPACING.sm,
+    paddingTop: SPACING.xs,
     paddingBottom: 80,
   },
   centerContainer: {
@@ -280,22 +372,28 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginTop: 6,
     textAlign: 'center',
+    lineHeight: 18,
   },
   noResultsText: {
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.textPrimary,
-  },
-  discoverHeading: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.textPrimary,
-  },
-  discoverText: {
-    fontSize: 13,
-    color: COLORS.textMuted,
     textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 18,
+  },
+  resetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.cardSecondary,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: RADIUS.sm,
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  resetBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

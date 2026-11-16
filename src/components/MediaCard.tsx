@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, Image, StyleSheet, TouchableOpacity } from 'react-native';
 import { MediaItem } from '../types';
 import { COLORS, RADIUS, SPACING } from '../constants/theme';
-import { Star } from 'lucide-react-native';
+import { Star, Film } from 'lucide-react-native';
 
 interface MediaCardProps {
   item: MediaItem;
@@ -19,8 +19,19 @@ export const MediaCard: React.FC<MediaCardProps> = ({
   height = 210,
   rank,
 }) => {
-  const releaseYear = item.releaseDate ? item.releaseDate.split('-')[0] : '';
+  const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [item.id, item.posterPath]);
+
+  const releaseYear = item.releaseDate && typeof item.releaseDate === 'string'
+    ? item.releaseDate.split('-')[0]
+    : '';
   const isRanked = rank !== undefined && rank > 0;
+  const mediaType = (item.mediaType || 'movie').toUpperCase();
+  const title = item.title || 'Untitled';
+  const hasValidPoster = !!item.posterPath && !imageError;
 
   return (
     <TouchableOpacity
@@ -29,11 +40,24 @@ export const MediaCard: React.FC<MediaCardProps> = ({
       onPress={() => onPress(item)}
     >
       <View style={[styles.imageWrapper, { height }]}>
-        <Image
-          source={{ uri: item.posterPath }}
-          style={styles.image}
-          resizeMode="cover"
-        />
+        {hasValidPoster ? (
+          <Image
+            source={{ uri: item.posterPath }}
+            style={styles.image}
+            resizeMode="cover"
+            onError={() => setImageError(true)}
+          />
+        ) : (
+          <View style={styles.fallbackPoster}>
+            <Film size={28} color={COLORS.primary} style={{ marginBottom: 6 }} />
+            <Text style={styles.fallbackTitle} numberOfLines={3}>
+              {title}
+            </Text>
+            {releaseYear ? (
+              <Text style={styles.fallbackYear}>{releaseYear}</Text>
+            ) : null}
+          </View>
+        )}
 
         {/* Cinema Top 10 Rank Badge & Large Stylized Number Overlay */}
         {isRanked && (
@@ -50,7 +74,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         )}
 
         {/* Rating Badge */}
-        {item.voteAverage > 0 && (
+        {typeof item.voteAverage === 'number' && item.voteAverage > 0 && (
           <View style={styles.ratingBadge}>
             <Star size={10} color="#FBBF24" fill="#FBBF24" />
             <Text style={styles.ratingText}>{item.voteAverage}</Text>
@@ -59,12 +83,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({
 
         {/* Media Type Chip */}
         <View style={[styles.typeBadge, isRanked && styles.typeBadgeRanked]}>
-          <Text style={styles.typeText}>{item.mediaType}</Text>
+          <Text style={styles.typeText}>{mediaType}</Text>
         </View>
       </View>
 
       <Text style={styles.title} numberOfLines={1}>
-        {item.title}
+        {title}
       </Text>
 
       {releaseYear ? (
@@ -89,6 +113,26 @@ const styles = StyleSheet.create({
   image: {
     width: '100%',
     height: '100%',
+  },
+  fallbackPoster: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#0F172A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: SPACING.sm,
+  },
+  fallbackTitle: {
+    color: '#F8FAFC',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 15,
+  },
+  fallbackYear: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    marginTop: 4,
   },
   top10Badge: {
     position: 'absolute',

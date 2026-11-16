@@ -21,6 +21,13 @@ import { SectionRow } from '../components/SectionRow';
 import { useAppStore } from '../store/useAppStore';
 import { COLORS, SPACING, RADIUS } from '../constants/theme';
 import { Search, Film, PlayCircle, Sparkles, ShieldCheck } from 'lucide-react-native';
+import {
+  FALLBACK_TRENDING,
+  FALLBACK_MOVIES,
+  FALLBACK_TV,
+  FALLBACK_ANIME,
+  FALLBACK_VAULT,
+} from '../services/fallbackData';
 
 type CategoryFilter = 'All' | 'Movies' | 'TV Series' | 'Anime' | 'Cinema Vault';
 const CATEGORIES: CategoryFilter[] = ['All', 'Movies', 'TV Series', 'Anime', 'Cinema Vault'];
@@ -44,13 +51,34 @@ export const HomeScreen: React.FC = () => {
   const loadFeeds = async () => {
     try {
       const vaultProvider = new PublicDomainProvider();
-      const [trend, movies, tv, anime, vault] = await Promise.all([
+      const results = await Promise.allSettled([
         TmdbService.getTrending('week'),
         TmdbService.getPopularMovies(),
         TmdbService.getPopularTv(),
         TmdbService.getTopAnime(),
         vaultProvider.getTrending(),
       ]);
+
+      const trend =
+        results[0].status === 'fulfilled' && results[0].value.length > 0
+          ? results[0].value
+          : FALLBACK_TRENDING;
+      const movies =
+        results[1].status === 'fulfilled' && results[1].value.length > 0
+          ? results[1].value
+          : FALLBACK_MOVIES;
+      const tv =
+        results[2].status === 'fulfilled' && results[2].value.length > 0
+          ? results[2].value
+          : FALLBACK_TV;
+      const anime =
+        results[3].status === 'fulfilled' && results[3].value.length > 0
+          ? results[3].value
+          : FALLBACK_ANIME;
+      const vault =
+        results[4].status === 'fulfilled' && results[4].value.length > 0
+          ? results[4].value
+          : FALLBACK_VAULT;
 
       setTrending(trend);
       setPopularMovies(movies);
@@ -69,9 +97,17 @@ export const HomeScreen: React.FC = () => {
         setHeroItem(anime[0]);
       } else if (trend.length > 0) {
         setHeroItem(trend[0]);
+      } else {
+        setHeroItem(FALLBACK_TRENDING[0]);
       }
     } catch (e) {
       console.warn('[HomeScreen] Feed load error:', e);
+      setTrending(FALLBACK_TRENDING);
+      setPopularMovies(FALLBACK_MOVIES);
+      setPopularTv(FALLBACK_TV);
+      setTopAnime(FALLBACK_ANIME);
+      setVaultFilms(FALLBACK_VAULT);
+      setHeroItem(FALLBACK_TRENDING[0]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -99,6 +135,10 @@ export const HomeScreen: React.FC = () => {
       setHeroItem(topAnime[0]);
     } else if (category === 'Cinema Vault' && vaultFilms.length > 0) {
       setHeroItem(vaultFilms[0]);
+    } else if (trending.length > 0) {
+      setHeroItem(trending[0]);
+    } else {
+      setHeroItem(FALLBACK_TRENDING[0]);
     }
   };
 
@@ -107,13 +147,24 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleHeroPlay = async (item: MediaItem) => {
-    const streams = await ProviderManager.resolveStreams(item);
-    if (streams.length > 0) {
-      const activeSource = streams[0];
-      const activeQuality = activeSource.qualities[0];
-      setActivePlayback(item, activeSource, activeQuality);
-      navigation.navigate('Player');
-    } else {
+    try {
+      const isSeries = item.mediaType !== 'movie';
+      const streams = await ProviderManager.resolveStreams(item, 1, 1);
+      if (streams && streams.length > 0) {
+        const best = ProviderManager.getBestStream(streams);
+        setActivePlayback(
+          item,
+          best.source,
+          best.quality,
+          isSeries ? 1 : undefined,
+          isSeries ? 1 : undefined,
+          streams
+        );
+        navigation.navigate('Player');
+      } else {
+        navigation.navigate('Details', { media: item });
+      }
+    } catch {
       navigation.navigate('Details', { media: item });
     }
   };
@@ -382,13 +433,13 @@ export const HomeScreen: React.FC = () => {
 
             <SectionRow
               title="Open-Source Animated Films"
-              items={vaultFilms.filter((f) => f.genres.includes('Animation'))}
+              items={vaultFilms.filter((f) => (f.genres || []).includes('Animation'))}
               onItemPress={handleMediaPress}
             />
 
             <SectionRow
               title="Sci-Fi & Preserved Masterpieces"
-              items={vaultFilms.filter((f) => !f.genres.includes('Animation'))}
+              items={vaultFilms.filter((f) => !(f.genres || []).includes('Animation'))}
               onItemPress={handleMediaPress}
             />
           </>

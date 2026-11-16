@@ -5,7 +5,12 @@ export const APP_CONFIG = {
   defaultUserAgent: 'MovieTonee/1.0.0 (Linux; Android; movietonee-client)',
   
   // Public TMDB Read-Access Configuration
-  tmdbApiKey: '3c8e4e963fc90f38fa46ec98c8c5c76d', // Standard public key
+  tmdbApiKey: '844dba0bfd8f3a4f3799f6130ef9e335', // Verified active public key
+  tmdbFallbackApiKeys: [
+    '844dba0bfd8f3a4f3799f6130ef9e335',
+    '4e44d9029b1270a757cddc766a1bcb63',
+    '2dca580c2a14b55200e784d157207b4d',
+  ],
   tmdbBaseUrl: 'https://api.themoviedb.org/3',
   tmdbImageBaseUrl: 'https://image.tmdb.org/t/p',
   

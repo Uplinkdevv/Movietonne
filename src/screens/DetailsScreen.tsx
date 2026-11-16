@@ -18,6 +18,7 @@ import { PublicDomainProvider } from '../services/providers/publicDomainProvider
 import { ProviderManager } from '../services/providers';
 import { StorageService } from '../services/storage';
 import { APP_CONFIG } from '../constants/config';
+import { ALL_FALLBACK_ITEMS } from '../services/fallbackData';
 import { MediaItem, Season, Episode, StreamSource, StreamQuality } from '../types';
 import { MediaCard } from '../components/MediaCard';
 import { useAppStore } from '../store/useAppStore';
@@ -53,6 +54,7 @@ export const DetailsScreen: React.FC = () => {
   const [loading, setLoading] = useState(!route.params.media);
   const [availableStreams, setAvailableStreams] = useState<StreamSource[]>([]);
   const [loadingStreams, setLoadingStreams] = useState(false);
+  const [backdropError, setBackdropError] = useState(false);
 
   // Series details
   const [selectedSeason, setSelectedSeason] = useState<number>(1);
@@ -64,23 +66,31 @@ export const DetailsScreen: React.FC = () => {
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
 
   useEffect(() => {
+    let isMounted = true;
+
     const fetchFullDetails = async () => {
       let currentItem: MediaItem | null | undefined = route.params.media;
 
       if (!currentItem && route.params.mediaId) {
-        // Fetch by ID
-        const tmdbNum = parseInt(route.params.mediaId.replace('tmdb-', ''), 10);
-        if (!isNaN(tmdbNum)) {
-          currentItem = await TmdbService.getDetails(tmdbNum, route.params.mediaType || 'movie');
+        // Look up by unified ID or tmdbId in fallback items first
+        const localMatch = ALL_FALLBACK_ITEMS.find(
+          (m) => m.id === route.params.mediaId || m.tmdbId?.toString() === route.params.mediaId
+        );
+        if (localMatch) {
+          currentItem = localMatch;
+        } else {
+          const tmdbNum = parseInt(route.params.mediaId.replace('tmdb-', ''), 10);
+          if (!isNaN(tmdbNum)) {
+            currentItem = await TmdbService.getDetails(tmdbNum, route.params.mediaType || 'movie');
+          }
         }
-      } else if (currentItem?.tmdbId) {
-        // Upgrade partial media item with credits and seasons
-        const full = await TmdbService.getDetails(currentItem.tmdbId, currentItem.mediaType);
-        if (full) currentItem = full;
       }
+
+      if (!isMounted) return;
 
       if (currentItem) {
         setMedia(currentItem);
+        setLoading(false);
         loadStreamsForMedia(currentItem);
         loadRecommendations(currentItem);
 
@@ -88,11 +98,25 @@ export const DetailsScreen: React.FC = () => {
         if (currentItem.mediaType !== 'movie' && currentItem.tmdbId) {
           loadEpisodes(currentItem.tmdbId, 1);
         }
+
+        // Background upgrade with cast/credits if from TMDB
+        if (currentItem.tmdbId && !currentItem.cast) {
+          TmdbService.getDetails(currentItem.tmdbId, currentItem.mediaType).then((full) => {
+            if (isMounted && full) {
+              setMedia(full);
+            }
+          }).catch(() => {});
+        }
+      } else {
+        setLoading(false);
       }
-      setLoading(false);
     };
 
     fetchFullDetails();
+
+    return () => {
+      isMounted = false;
+    };
   }, [route.params.media, route.params.mediaId]);
 
   const loadStreamsForMedia = async (item: MediaItem, season?: number, episode?: number) => {
@@ -131,83 +155,44 @@ export const DetailsScreen: React.FC = () => {
         const vaultAll = await vaultProvider.getTrending();
         recs = vaultAll.filter((v) => v.id !== item.id);
       } else if (item.tmdbId) {
-        // Query TMDB recommendations
-        const customKey = await StorageService.getCustomTmdbKey();
-        const apiKey = customKey || APP_CONFIG.tmdbApiKey;
-        const endpointType = item.mediaType === 'movie' ? 'movie' : 'tv';
+        // Query TMDB recommendations with safe timeout
+        try {
+          const customKey = await StorageService.getCustomTmdbKey();
+          const apiKey = customKey || APP_CONFIG.tmdbApiKey;
+          const endpointType = item.mediaType === 'movie' ? 'movie' : 'tv';
 
-        const res = await fetch(
-          `${APP_CONFIG.tmdbBaseUrl}/${endpointType}/${item.tmdbId}/recommendations?api_key=${apiKey}&page=1`
-        );
-        if (res.ok) {
-          const data = await res.json();
-          if (data.results && data.results.length > 0) {
-            recs = (data.results || [])
-              .filter((r: any) => r.poster_path)
-              .slice(0, 12)
-              .map((r: any) => ({
-                id: `tmdb-${r.id}`,
-                tmdbId: r.id,
-                title: r.title || r.name || 'Untitled',
-                originalTitle: r.original_title || r.original_name,
-                overview: r.overview || '',
-                posterPath: `${APP_CONFIG.tmdbImageBaseUrl}/w500${r.poster_path}`,
-                backdropPath: r.backdrop_path
-                  ? `${APP_CONFIG.tmdbImageBaseUrl}/original${r.backdrop_path}`
-                  : undefined,
-                mediaType: item.mediaType,
-                releaseDate: r.release_date || r.first_air_date || '',
-                voteAverage: Number((r.vote_average || 0).toFixed(1)),
-                voteCount: r.vote_count || 0,
-                genres: [],
-              }));
-          }
-        }
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-        // Fallback to /similar if recommendations was empty
-        if (recs.length === 0) {
-          const simRes = await fetch(
-            `${APP_CONFIG.tmdbBaseUrl}/${endpointType}/${item.tmdbId}/similar?api_key=${apiKey}&page=1`
+          const res = await fetch(
+            `${APP_CONFIG.tmdbBaseUrl}/${endpointType}/${item.tmdbId}/recommendations?api_key=${apiKey}&page=1`,
+            { signal: controller.signal }
           );
-          if (simRes.ok) {
-            const simData = await simRes.json();
-            if (simData.results && simData.results.length > 0) {
-              recs = (simData.results || [])
+          clearTimeout(timeoutId);
+
+          if (res.ok) {
+            const data = await res.json();
+            if (data.results && data.results.length > 0) {
+              recs = (data.results || [])
                 .filter((r: any) => r.poster_path)
                 .slice(0, 12)
-                .map((r: any) => ({
-                  id: `tmdb-${r.id}`,
-                  tmdbId: r.id,
-                  title: r.title || r.name || 'Untitled',
-                  originalTitle: r.original_title || r.original_name,
-                  overview: r.overview || '',
-                  posterPath: `${APP_CONFIG.tmdbImageBaseUrl}/w500${r.poster_path}`,
-                  backdropPath: r.backdrop_path
-                    ? `${APP_CONFIG.tmdbImageBaseUrl}/original${r.backdrop_path}`
-                    : undefined,
-                  mediaType: item.mediaType,
-                  releaseDate: r.release_date || r.first_air_date || '',
-                  voteAverage: Number((r.vote_average || 0).toFixed(1)),
-                  voteCount: r.vote_count || 0,
-                  genres: [],
-                }));
+                .map((r: any) => TmdbService.formatMediaItem(r, item.mediaType));
             }
           }
+        } catch (tmdbErr) {
+          console.warn('[DetailsScreen] Recommendations network fetch failed, using catalog recommendations');
         }
       }
 
-      // If still empty (offline or error), fallback to popular items
+      // If still empty (offline or error), fallback to catalog items with matching type/genres
       if (recs.length === 0) {
-        if (item.mediaType === 'movie') {
-          const pop = await TmdbService.getPopularMovies();
-          recs = pop.filter((m) => m.id !== item.id).slice(0, 10);
-        } else if (item.mediaType === 'anime') {
-          const anime = await TmdbService.getTopAnime();
-          recs = anime.filter((m) => m.id !== item.id).slice(0, 10);
-        } else {
-          const tv = await TmdbService.getPopularTv();
-          recs = tv.filter((m) => m.id !== item.id).slice(0, 10);
-        }
+        const itemGenres = item.genres || [];
+        recs = ALL_FALLBACK_ITEMS.filter((m) => {
+          if (m.id === item.id) return false;
+          if (m.mediaType === item.mediaType) return true;
+          if (Array.isArray(m.genres) && itemGenres.some((g) => m.genres.includes(g))) return true;
+          return false;
+        }).slice(0, 10);
       }
 
       setRecommendations(recs);
@@ -246,7 +231,7 @@ export const DetailsScreen: React.FC = () => {
     let targetSource: StreamSource;
     let targetQuality: StreamQuality;
 
-    if (sourceChoice) {
+    if (sourceChoice && sourceChoice.qualities && sourceChoice.qualities.length > 0) {
       targetSource = sourceChoice;
       // Auto-select best quality for chosen source
       const autoQ = sourceChoice.qualities.find((q) => q.quality === 'Auto' && (q.isM3u8 || q.url.includes('.m3u8')));
@@ -257,6 +242,12 @@ export const DetailsScreen: React.FC = () => {
       const best = ProviderManager.getBestStream(streams);
       targetSource = best.source;
       targetQuality = best.quality;
+    }
+
+    if (!targetQuality) {
+      const fb = ProviderManager.getFallbackSources()[0];
+      targetSource = fb;
+      targetQuality = fb.qualities[0];
     }
 
     setActivePlayback(
@@ -280,16 +271,28 @@ export const DetailsScreen: React.FC = () => {
   }
 
   const isBookmarked = isInWatchlist(media.id);
-  const releaseYear = media.releaseDate ? media.releaseDate.split('-')[0] : '';
+  const releaseYear = media.releaseDate && typeof media.releaseDate === 'string'
+    ? media.releaseDate.split('-')[0]
+    : '';
   const backdrop = media.backdropPath || media.posterPath;
   const bestStreamChoice = availableStreams.length > 0 ? ProviderManager.getBestStream(availableStreams) : null;
+  const hasValidBackdrop = !!backdrop && !backdropError;
 
   return (
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* Backdrop Header */}
         <View style={styles.headerImageWrapper}>
-          <Image source={{ uri: backdrop }} style={styles.backdropImage} resizeMode="cover" />
+          {hasValidBackdrop ? (
+            <Image
+              source={{ uri: backdrop }}
+              style={styles.backdropImage}
+              resizeMode="cover"
+              onError={() => setBackdropError(true)}
+            />
+          ) : (
+            <View style={[styles.backdropImage, { backgroundColor: '#0F172A' }]} />
+          )}
           <LinearGradient
             colors={['rgba(7, 10, 19, 0.4)', 'transparent', COLORS.background]}
             locations={[0, 0.5, 1]}
@@ -329,12 +332,12 @@ export const DetailsScreen: React.FC = () => {
             {releaseYear ? <Text style={styles.metaDot}>•</Text> : null}
             {releaseYear ? <Text style={styles.metaText}>{releaseYear}</Text> : null}
             <Text style={styles.metaDot}>•</Text>
-            <Text style={styles.typeTag}>{media.mediaType.toUpperCase()}</Text>
+            <Text style={styles.typeTag}>{(media.mediaType || 'movie').toUpperCase()}</Text>
           </View>
 
           {/* Genre Chips */}
           <View style={styles.genreRow}>
-            {media.genres.map((g, i) => (
+            {(media.genres || []).map((g, i) => (
               <View key={`g-${i}`} style={styles.genrePill}>
                 <Text style={styles.genreText}>{g}</Text>
               </View>

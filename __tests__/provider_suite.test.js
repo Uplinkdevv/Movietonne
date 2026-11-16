@@ -1,5 +1,6 @@
 // Comprehensive Provider Test Suite for MovieTonee / ScreenScape
 const fs = require('fs');
+const path = require('path');
 const assert = require('assert');
 
 console.log('====================================================');
@@ -36,7 +37,10 @@ async function asyncTest(name, fn) {
 // ---------------------------------------------------------
 // 1. Audit manifestData.ts
 // ---------------------------------------------------------
-const manifestContent = fs.readFileSync('movietonee/src/services/providers/manifestData.ts', 'utf8');
+const manifestPath = fs.existsSync(path.resolve(__dirname, '../src/services/providers/manifestData.ts'))
+  ? path.resolve(__dirname, '../src/services/providers/manifestData.ts')
+  : path.resolve(process.cwd(), 'movietonee/src/services/providers/manifestData.ts');
+const manifestContent = fs.readFileSync(manifestPath, 'utf8');
 const eqIdx = manifestContent.indexOf('= [');
 const arrayStr = manifestContent.substring(eqIdx + 2, manifestContent.lastIndexOf(']') + 1);
 const bundledProviders = JSON.parse(arrayStr);
@@ -363,7 +367,10 @@ async function runAsyncTests() {
   // 4. ProviderIconImage Component Verification
   // ---------------------------------------------------------
   test('4.1. ProviderIconImage handles missing iconUri and error state with Server fallback', () => {
-    const iconFile = fs.readFileSync('movietonee/src/components/ProviderIconImage.tsx', 'utf8');
+    const iconFilePath = fs.existsSync(path.resolve(__dirname, '../src/components/ProviderIconImage.tsx'))
+      ? path.resolve(__dirname, '../src/components/ProviderIconImage.tsx')
+      : path.resolve(process.cwd(), 'movietonee/src/components/ProviderIconImage.tsx');
+    const iconFile = fs.readFileSync(iconFilePath, 'utf8');
     assert(iconFile.includes('<Server size={size} color={iconColor} />'), 'Must return Lucide Server icon on error/missing');
     assert(iconFile.includes('onError={() => setHasError(true)}'), 'Must catch Image onError and trigger fallback');
   });
